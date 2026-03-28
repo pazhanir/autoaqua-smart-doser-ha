@@ -1,0 +1,11 @@
+{
+  "domain": "autoaqua_doser",
+  "name": "Auto Aqua Smart Doser",
+  "codeowners": ["@pazhanir"],
+  "config_flow": true,
+  "documentation": "https://github.com/pazhanir/autoaqua-smart-doser-ha",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/pazhanir/autoaqua-smart-doser-ha/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

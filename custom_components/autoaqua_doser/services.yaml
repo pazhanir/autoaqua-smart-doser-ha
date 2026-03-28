@@ -1,0 +1,34 @@
+dose:
+  name: Dose pump
+  description: Trigger a dose on a specific pump of the Auto Aqua Smart Doser.
+  fields:
+    device_id:
+      name: Device ID
+      description: The MAC / device ID of the doser (e.g. 34B7DA28DE69).
+      required: true
+      example: "34B7DA28DE69"
+      selector:
+        text:
+    pump:
+      name: Pump
+      description: Pump number (1-4).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
+          mode: box
+    ml:
+      name: Amount (ml)
+      description: Milliliters to dose (1-999).
+      required: true
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 999
+          step: 1
+          unit_of_measurement: ml
+          mode: box
