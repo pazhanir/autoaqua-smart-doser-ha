@@ -104,10 +104,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the static path for brand icons."""
-    hass.http.register_static_path(
-        f"/api/autoaqua_doser/static",
-        str(Path(__file__).parent),
-        cache_headers=True,
+    from homeassistant.components.http import StaticPathConfig
+
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(f"/api/autoaqua_doser/static", str(Path(__file__).parent), True)]
     )
     return True
 
