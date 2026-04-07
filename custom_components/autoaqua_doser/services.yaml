@@ -32,3 +32,199 @@ dose:
           step: 1
           unit_of_measurement: ml
           mode: box
+
+add_schedule:
+  name: Add dosing schedule
+  description: Create a new recurring dosing schedule for a pump.
+  fields:
+    device_id:
+      name: Device ID
+      description: The MAC / device ID of the doser.
+      required: true
+      example: "34B7DA28DE69"
+      selector:
+        text:
+    pump:
+      name: Pump
+      description: Pump number (1-4).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
+          mode: box
+    ml:
+      name: Amount (ml)
+      description: Milliliters to dose (1-999).
+      required: true
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 999
+          step: 1
+          unit_of_measurement: ml
+          mode: box
+    time:
+      name: Time
+      description: Time of day to dose (HH:MM, 24-hour format).
+      required: true
+      example: "08:00"
+      selector:
+        time:
+    days:
+      name: Days
+      description: >-
+        Days of the week to dose. Use lowercase 3-letter abbreviations:
+        mon, tue, wed, thu, fri, sat, sun. Leave empty or include all 7 for daily.
+      required: false
+      example: '["mon", "wed", "fri"]'
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Monday
+              value: mon
+            - label: Tuesday
+              value: tue
+            - label: Wednesday
+              value: wed
+            - label: Thursday
+              value: thu
+            - label: Friday
+              value: fri
+            - label: Saturday
+              value: sat
+            - label: Sunday
+              value: sun
+    enabled:
+      name: Enabled
+      description: Whether the schedule is active (default true).
+      required: false
+      default: true
+      selector:
+        boolean:
+    name:
+      name: Name
+      description: Optional friendly name for this schedule.
+      required: false
+      example: "Morning alkalinity"
+      selector:
+        text:
+
+update_schedule:
+  name: Update dosing schedule
+  description: Modify an existing dosing schedule. Only the provided fields are updated.
+  fields:
+    device_id:
+      name: Device ID
+      description: The MAC / device ID of the doser.
+      required: true
+      example: "34B7DA28DE69"
+      selector:
+        text:
+    schedule_id:
+      name: Schedule ID
+      description: The UUID of the schedule to update.
+      required: true
+      selector:
+        text:
+    pump:
+      name: Pump
+      description: Pump number (1-4).
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
+          mode: box
+    ml:
+      name: Amount (ml)
+      description: Milliliters to dose (1-999).
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 999
+          step: 1
+          unit_of_measurement: ml
+          mode: box
+    time:
+      name: Time
+      description: Time of day to dose (HH:MM, 24-hour format).
+      required: false
+      selector:
+        time:
+    days:
+      name: Days
+      description: Days of the week to dose.
+      required: false
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Monday
+              value: mon
+            - label: Tuesday
+              value: tue
+            - label: Wednesday
+              value: wed
+            - label: Thursday
+              value: thu
+            - label: Friday
+              value: fri
+            - label: Saturday
+              value: sat
+            - label: Sunday
+              value: sun
+    enabled:
+      name: Enabled
+      description: Whether the schedule is active.
+      required: false
+      selector:
+        boolean:
+    name:
+      name: Name
+      description: Friendly name for this schedule.
+      required: false
+      selector:
+        text:
+
+remove_schedule:
+  name: Remove dosing schedule
+  description: Delete a dosing schedule by its ID.
+  fields:
+    device_id:
+      name: Device ID
+      description: The MAC / device ID of the doser.
+      required: true
+      example: "34B7DA28DE69"
+      selector:
+        text:
+    schedule_id:
+      name: Schedule ID
+      description: The UUID of the schedule to remove.
+      required: true
+      selector:
+        text:
+
+toggle_schedule:
+  name: Toggle dosing schedule
+  description: Enable or disable a dosing schedule (toggles current state).
+  fields:
+    device_id:
+      name: Device ID
+      description: The MAC / device ID of the doser.
+      required: true
+      example: "34B7DA28DE69"
+      selector:
+        text:
+    schedule_id:
+      name: Schedule ID
+      description: The UUID of the schedule to toggle.
+      required: true
+      selector:
+        text:
