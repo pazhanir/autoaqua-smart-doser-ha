@@ -6,6 +6,7 @@ execution via Home Assistant's async_track_time_change.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -120,6 +121,7 @@ class ScheduleManager:
         self._schedules: dict[str, ScheduleEntry] = {}
         self._listeners: dict[str, CALLBACK_TYPE] = {}
         self._pump_names: dict[int, str] = {}  # {1: "Alkalinity", 2: "Calcium", ...}
+        self._save_lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         """Load schedules and pump names from persistent storage and register listeners."""
@@ -155,13 +157,14 @@ class ScheduleManager:
 
     async def _async_save(self) -> None:
         """Save all schedules and pump names to persistent storage."""
-        # Load existing data to preserve other devices' data
-        data = await self._store.async_load() or {}
-        data[self.device_id] = {
-            "schedules": [s.to_dict() for s in self._schedules.values()],
-            "pump_names": {str(k): v for k, v in self._pump_names.items()},
-        }
-        await self._store.async_save(data)
+        async with self._save_lock:
+            # Load existing data to preserve other devices' data
+            data = await self._store.async_load() or {}
+            data[self.device_id] = {
+                "schedules": [s.to_dict() for s in self._schedules.values()],
+                "pump_names": {str(k): v for k, v in self._pump_names.items()},
+            }
+            await self._store.async_save(data)
 
     # ── Pump names ────────────────────────────────────────────────────
 

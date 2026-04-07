@@ -129,7 +129,12 @@ SCHEDULE_MANAGERS_KEY = f"{DOMAIN}_schedule_managers"
 # Static path for serving the Lovelace card JS
 CARD_URL_PATH = f"/hacsfiles/{DOMAIN}"
 CARD_JS_FILENAME = "autoaqua-doser-schedule-card.js"
-LOVELACE_RESOURCE_URL = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}"
+CARD_VERSION = "1.1.1"
+LOVELACE_RESOURCE_URL = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}?v={CARD_VERSION}"
+
+# Keys for per-hass-instance registration flags
+_CARD_REGISTERED_KEY = f"{DOMAIN}_card_registered"
+_WS_REGISTERED_KEY = f"{DOMAIN}_ws_registered"
 
 
 def _get_schedule_manager(hass: HomeAssistant, device_id: str) -> ScheduleManager | None:
@@ -201,7 +206,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not managers:
             hass.data.pop(SCHEDULE_MANAGERS_KEY, None)
 
-        # Unregister services if no more entries
+        # Unregister services and clean up if no more entries
         if not hass.data[DOMAIN]:
             for svc in (
                 SERVICE_DOSE,
@@ -213,6 +218,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ):
                 hass.services.async_remove(DOMAIN, svc)
             hass.data.pop(DOMAIN, None)
+
+            # Remove Lovelace resource entry
+            await _async_remove_lovelace_resource(hass)
+
+            # Reset registration flags so re-setup works correctly
+            hass.data.pop(_CARD_REGISTERED_KEY, None)
+            hass.data.pop(_WS_REGISTERED_KEY, None)
 
     return unload_ok
 
@@ -371,15 +383,12 @@ async def _async_register_services(hass: HomeAssistant) -> None:
 
 # ── WebSocket commands ────────────────────────────────────────────────
 
-_WS_REGISTERED = False
-
 
 def _register_websocket_commands(hass: HomeAssistant) -> None:
     """Register WebSocket commands (once per HA instance)."""
-    global _WS_REGISTERED  # noqa: PLW0603
-    if _WS_REGISTERED:
+    if hass.data.get(_WS_REGISTERED_KEY):
         return
-    _WS_REGISTERED = True
+    hass.data[_WS_REGISTERED_KEY] = True
 
     from homeassistant.components import websocket_api
 
@@ -445,15 +454,12 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
 
 # ── Static file serving for Lovelace card ─────────────────────────────
 
-_CARD_REGISTERED = False
-
 
 async def _async_register_card_resource(hass: HomeAssistant) -> None:
     """Register the card JS file as a static path and add it as a Lovelace resource."""
-    global _CARD_REGISTERED  # noqa: PLW0603
-    if _CARD_REGISTERED:
+    if hass.data.get(_CARD_REGISTERED_KEY):
         return
-    _CARD_REGISTERED = True
+    hass.data[_CARD_REGISTERED_KEY] = True
 
     # Serve the www/ folder under the URL path
     www_dir = str(Path(__file__).parent / "www")
@@ -468,7 +474,10 @@ async def _async_register_card_resource(hass: HomeAssistant) -> None:
 
 
 async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
-    """Add the card JS as a Lovelace resource if not already present."""
+    """Add the card JS as a Lovelace resource if not already present.
+
+    If an older version URL exists, update it to the current version.
+    """
     try:
         # Try to access the Lovelace resources collection (storage mode)
         from homeassistant.components.lovelace import (
@@ -493,10 +502,21 @@ async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
         if not resources.loaded:
             await resources.async_load()
 
-        # Check if already registered
+        # Check if already registered (exact match or older version)
+        base_url = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}"
         for item in resources.async_items():
-            if CARD_JS_FILENAME in item.get("url", ""):
-                _LOGGER.debug("Card resource already registered")
+            url = item.get("url", "")
+            if url == LOVELACE_RESOURCE_URL:
+                _LOGGER.debug("Card resource already registered with current version")
+                return
+            if url.startswith(base_url):
+                # Older version found — update to current
+                await resources.async_update_item(
+                    item["id"], {"res_type": "module", "url": LOVELACE_RESOURCE_URL}
+                )
+                _LOGGER.info(
+                    "Updated Lovelace resource URL: %s -> %s", url, LOVELACE_RESOURCE_URL
+                )
                 return
 
         # Register it
@@ -505,12 +525,50 @@ async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
         )
         _LOGGER.info("Auto-registered Lovelace resource: %s", LOVELACE_RESOURCE_URL)
 
-    except Exception:
+    except (ImportError, AttributeError, KeyError) as exc:
         _LOGGER.debug(
-            "Could not auto-register Lovelace resource; add manually: %s",
+            "Could not auto-register Lovelace resource (%s); add manually: %s",
+            exc,
+            LOVELACE_RESOURCE_URL,
+        )
+    except Exception:
+        _LOGGER.warning(
+            "Unexpected error registering Lovelace resource; add manually: %s",
             LOVELACE_RESOURCE_URL,
             exc_info=True,
         )
+
+
+async def _async_remove_lovelace_resource(hass: HomeAssistant) -> None:
+    """Remove the card JS Lovelace resource entry on unload."""
+    try:
+        from homeassistant.components.lovelace import (
+            DOMAIN as LOVELACE_DOMAIN,
+        )
+        from homeassistant.components.lovelace.resources import (
+            ResourceStorageCollection,
+        )
+
+        lovelace_data = hass.data.get(LOVELACE_DOMAIN)
+        if lovelace_data is None:
+            return
+
+        resources = getattr(lovelace_data, "resources", None)
+        if resources is None or not isinstance(resources, ResourceStorageCollection):
+            return
+
+        if not resources.loaded:
+            await resources.async_load()
+
+        base_url = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}"
+        for item in resources.async_items():
+            if item.get("url", "").startswith(base_url):
+                await resources.async_delete_item(item["id"])
+                _LOGGER.info("Removed Lovelace resource: %s", item["url"])
+                return
+
+    except Exception:
+        _LOGGER.debug("Could not remove Lovelace resource on unload", exc_info=True)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
