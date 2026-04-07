@@ -228,3 +228,33 @@ toggle_schedule:
       required: true
       selector:
         text:
+
+rename_pump:
+  name: Rename pump
+  description: Set a custom name for a pump (e.g. "Alkalinity", "Calcium"). Pass empty string to reset.
+  fields:
+    device_id:
+      name: Device ID
+      description: The MAC / device ID of the doser.
+      required: true
+      example: "34B7DA28DE69"
+      selector:
+        text:
+    pump:
+      name: Pump
+      description: Pump number (1-4).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
+          mode: box
+    name:
+      name: Name
+      description: Custom name for this pump (e.g. "Alkalinity"). Empty string resets to default.
+      required: true
+      example: "Alkalinity"
+      selector:
+        text:

@@ -2,11 +2,12 @@
  * Auto Aqua Smart Doser — Schedule Card
  *
  * A custom Lovelace card for managing recurring dosing schedules.
- * Uses HA services for CRUD and WebSocket for fetching schedule data.
+ * Auto-detects the device — no manual device_id needed for single-device setups.
+ * Pump names are editable and persisted.
  */
 
 const DOMAIN = "autoaqua_doser";
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 const DAY_LABELS = [
   { key: "mon", label: "M" },
@@ -28,24 +29,31 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
     this._activePump = 1;
     this._editing = null; // schedule id being edited, or "new"
     this._formData = this._defaultForm();
-    this._loading = false;
+    this._loading = true;
     this._error = null;
-    this._deleteConfirm = null; // schedule id pending delete confirmation
+    this._deleteConfirm = null;
+    // Device info from WS
+    this._deviceId = null;
+    this._deviceName = "";
+    this._pumpNames = { 1: "Pump 1", 2: "Pump 2", 3: "Pump 3", 4: "Pump 4" };
+    this._online = false;
+    this._initialized = false;
+    // Pump rename state
+    this._renamingPump = null; // pump number being renamed
+    this._renameValue = "";
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (!this._schedules.length && !this._loading) {
-      this._fetchSchedules();
+    if (!this._initialized) {
+      this._initialized = true;
+      this._initDevice();
     }
   }
 
   setConfig(config) {
-    if (!config.device_id) {
-      throw new Error("Please define device_id in card config");
-    }
     this._config = config;
-    this._render();
+    // device_id is now optional — auto-detected if not set
   }
 
   getCardSize() {
@@ -53,17 +61,71 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { device_id: "" };
+    return {};
   }
 
   static getConfigElement() {
     return document.createElement("autoaqua-doser-schedule-card-editor");
   }
 
+  // ── Init ───────────────────────────────────────────────────────────
+
+  async _initDevice() {
+    if (!this._hass) return;
+    this._loading = true;
+    this._render();
+
+    try {
+      // Fetch all configured devices
+      const result = await this._hass.callWS({
+        type: `${DOMAIN}/get_devices`,
+      });
+      const devices = result.devices || [];
+
+      if (devices.length === 0) {
+        this._error = "No Auto Aqua devices configured";
+        this._loading = false;
+        this._render();
+        return;
+      }
+
+      // If device_id in config, use it; otherwise auto-select first
+      let device;
+      if (this._config.device_id) {
+        device = devices.find((d) => d.device_id === this._config.device_id);
+        if (!device) {
+          this._error = `Device ${this._config.device_id} not found`;
+          this._loading = false;
+          this._render();
+          return;
+        }
+      } else {
+        device = devices[0];
+      }
+
+      this._deviceId = device.device_id;
+      this._deviceName = device.device_name || device.device_id;
+      this._online = device.online;
+
+      // Parse pump names (keys are strings from JSON)
+      for (let p = 1; p <= 4; p++) {
+        this._pumpNames[p] = device.pump_names[String(p)] || `Pump ${p}`;
+      }
+
+      // Now fetch schedules
+      await this._fetchSchedules();
+    } catch (err) {
+      console.error("Failed to init device:", err);
+      this._error = "Failed to connect to Auto Aqua integration";
+      this._loading = false;
+      this._render();
+    }
+  }
+
   // ── Data ───────────────────────────────────────────────────────────
 
   async _fetchSchedules() {
-    if (!this._hass || !this._config.device_id) return;
+    if (!this._hass || !this._deviceId) return;
     this._loading = true;
     this._error = null;
     this._render();
@@ -71,7 +133,7 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
     try {
       const result = await this._hass.callWS({
         type: `${DOMAIN}/get_schedules`,
-        device_id: this._config.device_id,
+        device_id: this._deviceId,
       });
       this._schedules = result.schedules || [];
     } catch (err) {
@@ -93,7 +155,7 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
     try {
       this._error = null;
       await this._hass.callService(DOMAIN, service, {
-        device_id: this._config.device_id,
+        device_id: this._deviceId,
         ...data,
       });
       // Re-fetch after mutation
@@ -103,6 +165,51 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
       this._error = err.message || `Failed: ${service}`;
       this._render();
     }
+  }
+
+  // ── Pump rename ────────────────────────────────────────────────────
+
+  _startRenamePump(pump) {
+    this._renamingPump = pump;
+    this._renameValue = this._pumpNames[pump] || "";
+    this._render();
+    // Focus the input after render
+    requestAnimationFrame(() => {
+      const input = this.shadowRoot.getElementById("pump-rename-input");
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    });
+  }
+
+  async _submitRenamePump() {
+    const pump = this._renamingPump;
+    const name = this._renameValue.trim();
+    this._renamingPump = null;
+
+    if (!name || name === this._pumpNames[pump]) {
+      this._render();
+      return;
+    }
+
+    try {
+      await this._hass.callService(DOMAIN, "rename_pump", {
+        device_id: this._deviceId,
+        pump: pump,
+        name: name,
+      });
+      this._pumpNames[pump] = name;
+    } catch (err) {
+      console.error("Rename pump failed:", err);
+      this._error = err.message || "Failed to rename pump";
+    }
+    this._render();
+  }
+
+  _cancelRenamePump() {
+    this._renamingPump = null;
+    this._render();
   }
 
   // ── Form ───────────────────────────────────────────────────────────
@@ -185,6 +292,19 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
 
+    // Not initialized yet
+    if (!this._deviceId && !this._error) {
+      this.shadowRoot.innerHTML = `
+        <style>${this._styles()}</style>
+        <ha-card>
+          <div class="card-content">
+            <div class="loading">Connecting to doser...</div>
+          </div>
+        </ha-card>
+      `;
+      return;
+    }
+
     const pumpSchedules = this._schedulesForPump(this._activePump);
     const isEditing = this._editing !== null;
 
@@ -194,6 +314,10 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
         <div class="card-header">
           <div class="header-row">
             <span class="title">Dosing Schedules</span>
+            ${this._online
+              ? '<span class="status-dot online" title="Device online"></span>'
+              : '<span class="status-dot offline" title="Device offline"></span>'
+            }
           </div>
           ${this._renderPumpTabs()}
         </div>
@@ -215,9 +339,26 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
     for (let p = 1; p <= 4; p++) {
       const count = this._schedulesForPump(p).length;
       const active = p === this._activePump ? "active" : "";
-      tabs += `<button class="pump-tab ${active}" data-pump="${p}">
-        Pump ${p}${count > 0 ? ` <span class="badge">${count}</span>` : ""}
-      </button>`;
+      const name = this._pumpNames[p] || `Pump ${p}`;
+      const isRenaming = this._renamingPump === p;
+
+      if (isRenaming) {
+        tabs += `<div class="pump-tab ${active} renaming" data-pump="${p}">
+          <input type="text" id="pump-rename-input" class="rename-input"
+                 value="${this._escAttr(this._renameValue)}"
+                 maxlength="20" />
+          <button class="rename-ok" id="rename-ok-btn" title="Save">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg>
+          </button>
+          <button class="rename-cancel" id="rename-cancel-btn" title="Cancel">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>`;
+      } else {
+        tabs += `<button class="pump-tab ${active}" data-pump="${p}">
+          <span class="pump-name" data-rename-pump="${p}">${this._escHtml(name)}</span>${count > 0 ? ` <span class="badge">${count}</span>` : ""}
+        </button>`;
+      }
     }
     return `<div class="pump-tabs">${tabs}</div>`;
   }
@@ -232,7 +373,7 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
               <polyline points="12,6 12,12 16,14"/>
             </svg>
           </div>
-          <div class="empty-text">No schedules for Pump ${this._activePump}</div>
+          <div class="empty-text">No schedules for ${this._escHtml(this._pumpNames[this._activePump])}</div>
           <div class="empty-hint">Tap + to create a dosing schedule</div>
         </div>
       `;
@@ -311,11 +452,11 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
 
     return `
       <div class="form-container">
-        <div class="form-title">${isNew ? "New Schedule" : "Edit Schedule"}</div>
+        <div class="form-title">${isNew ? "New Schedule" : "Edit Schedule"} &mdash; ${this._escHtml(this._pumpNames[this._activePump])}</div>
 
         <div class="form-row">
           <label>Name (optional)</label>
-          <input type="text" class="form-input" id="form-name" value="${this._escAttr(f.name)}" placeholder="e.g. Morning alkalinity" />
+          <input type="text" class="form-input" id="form-name" value="${this._escAttr(f.name)}" placeholder="e.g. Morning dose" />
         </div>
 
         <div class="form-row">
@@ -358,15 +499,62 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
     const root = this.shadowRoot;
 
     // Pump tabs
-    root.querySelectorAll(".pump-tab").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        this._activePump = parseInt(btn.dataset.pump, 10);
-        this._editing = null;
-        this._deleteConfirm = null;
-        this._error = null;
-        this._render();
+    root.querySelectorAll(".pump-tab:not(.renaming)").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        // Don't switch tabs if clicking the rename area
+        if (e.target.closest("[data-rename-pump]")) return;
+        const pump = parseInt(btn.dataset.pump, 10);
+        if (pump !== this._activePump) {
+          this._activePump = pump;
+          this._editing = null;
+          this._deleteConfirm = null;
+          this._error = null;
+          this._render();
+        }
       });
     });
+
+    // Double-click pump name to rename
+    root.querySelectorAll("[data-rename-pump]").forEach((el) => {
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const pump = parseInt(el.dataset.renamePump, 10);
+        this._startRenamePump(pump);
+      });
+    });
+
+    // Rename input handlers
+    const renameInput = root.getElementById("pump-rename-input");
+    if (renameInput) {
+      renameInput.addEventListener("input", (e) => {
+        this._renameValue = e.target.value;
+      });
+      renameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          this._submitRenamePump();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          this._cancelRenamePump();
+        }
+      });
+    }
+
+    const renameOk = root.getElementById("rename-ok-btn");
+    if (renameOk) {
+      renameOk.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._submitRenamePump();
+      });
+    }
+
+    const renameCancel = root.getElementById("rename-cancel-btn");
+    if (renameCancel) {
+      renameCancel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._cancelRenamePump();
+      });
+    }
 
     // Toggle switches
     root.querySelectorAll("[data-toggle]").forEach((input) => {
@@ -419,7 +607,6 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
     const formSave = root.getElementById("form-save");
     if (formSave) {
       formSave.addEventListener("click", () => {
-        // Collect form values
         const name = root.getElementById("form-name")?.value || "";
         const time = root.getElementById("form-time")?.value || "08:00";
         const ml = parseInt(root.getElementById("form-ml")?.value || "5", 10);
@@ -477,6 +664,23 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
         color: var(--primary-text);
       }
 
+      .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .status-dot.online {
+        background: var(--success-color);
+        box-shadow: 0 0 6px var(--success-color);
+      }
+
+      .status-dot.offline {
+        background: var(--error-color);
+        box-shadow: 0 0 6px var(--error-color);
+      }
+
       /* Pump tabs */
       .pump-tabs {
         display: flex;
@@ -497,6 +701,11 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
         border-bottom: 2px solid transparent;
         transition: all 0.2s;
         font-family: inherit;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        min-width: 0;
       }
 
       .pump-tab:hover {
@@ -507,6 +716,63 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
       .pump-tab.active {
         color: var(--primary);
         border-bottom-color: var(--primary);
+      }
+
+      .pump-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+
+      .pump-tab.active .pump-name {
+        cursor: text;
+      }
+
+      .pump-tab.renaming {
+        padding: 4px;
+        gap: 2px;
+        border-bottom-color: var(--primary);
+      }
+
+      .rename-input {
+        width: 100%;
+        min-width: 0;
+        padding: 2px 6px;
+        border: 1px solid var(--primary);
+        border-radius: 4px;
+        font-size: 12px;
+        font-family: inherit;
+        color: var(--primary-text);
+        background: var(--card-bg);
+        outline: none;
+        box-sizing: border-box;
+      }
+
+      .rename-ok, .rename-cancel {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        border-radius: 4px;
+        padding: 0;
+        flex-shrink: 0;
+      }
+
+      .rename-ok {
+        color: var(--success-color);
+      }
+
+      .rename-cancel {
+        color: var(--error-color);
+      }
+
+      .rename-ok:hover, .rename-cancel:hover {
+        background: rgba(0,0,0,0.08);
       }
 
       .badge {
@@ -521,7 +787,7 @@ class AutoAquaDoserScheduleCard extends HTMLElement {
         color: #fff;
         font-size: 11px;
         font-weight: 600;
-        margin-left: 4px;
+        flex-shrink: 0;
       }
 
       .card-content {
@@ -920,6 +1186,15 @@ class AutoAquaDoserScheduleCardEditor extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._config = {};
+    this._hass = null;
+    this._devices = [];
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._devices.length === 0) {
+      this._loadDevices();
+    }
   }
 
   setConfig(config) {
@@ -927,40 +1202,64 @@ class AutoAquaDoserScheduleCardEditor extends HTMLElement {
     this._render();
   }
 
+  async _loadDevices() {
+    if (!this._hass) return;
+    try {
+      const result = await this._hass.callWS({
+        type: `${DOMAIN}/get_devices`,
+      });
+      this._devices = result.devices || [];
+    } catch (err) {
+      console.error("Failed to load devices:", err);
+    }
+    this._render();
+  }
+
   _render() {
+    const devices = this._devices;
+    const currentId = this._config.device_id || "";
+
+    let deviceOptions = '<option value="">Auto-detect (recommended)</option>';
+    for (const d of devices) {
+      const selected = d.device_id === currentId ? "selected" : "";
+      const label = d.device_name || d.device_id;
+      deviceOptions += `<option value="${d.device_id}" ${selected}>${label} (${d.device_id})</option>`;
+    }
+
     this.shadowRoot.innerHTML = `
       <style>
-        .editor {
-          padding: 16px;
+        .editor { padding: 16px; }
+        label { display: block; font-weight: 500; margin-bottom: 4px; }
+        select, input {
+          width: 100%; padding: 8px; border: 1px solid #ccc;
+          border-radius: 4px; font-size: 14px; box-sizing: border-box;
         }
-        label {
-          display: block;
-          font-weight: 500;
-          margin-bottom: 4px;
-        }
-        input {
-          width: 100%;
-          padding: 8px;
-          border: 1px solid #ccc;
-          border-radius: 4px;
-          font-size: 14px;
-          box-sizing: border-box;
-        }
-        .hint {
-          font-size: 12px;
-          color: #666;
-          margin-top: 4px;
-        }
+        .hint { font-size: 12px; color: #666; margin-top: 4px; }
+        .note { font-size: 12px; color: #999; margin-top: 12px; font-style: italic; }
       </style>
       <div class="editor">
-        <label>Device ID</label>
-        <input type="text" id="device_id" value="${this._config.device_id || ""}" placeholder="e.g. 34B7DA28DE69" />
-        <div class="hint">The MAC / device ID of your Auto Aqua Smart Doser</div>
+        <label>Device</label>
+        <select id="device_id">${deviceOptions}</select>
+        <div class="hint">
+          ${devices.length <= 1
+            ? "Auto-detect works when you have a single doser. No config needed."
+            : "Select which doser this card manages. Add one card per device."
+          }
+        </div>
+        <div class="note">
+          Pump names can be changed by double-clicking the tab name in the card.
+        </div>
       </div>
     `;
 
-    this.shadowRoot.getElementById("device_id").addEventListener("input", (e) => {
-      this._config = { ...this._config, device_id: e.target.value };
+    this.shadowRoot.getElementById("device_id").addEventListener("change", (e) => {
+      const newConfig = { ...this._config };
+      if (e.target.value) {
+        newConfig.device_id = e.target.value;
+      } else {
+        delete newConfig.device_id;
+      }
+      this._config = newConfig;
       const event = new CustomEvent("config-changed", {
         detail: { config: this._config },
         bubbles: true,

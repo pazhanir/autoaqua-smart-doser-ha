@@ -54,6 +54,7 @@ SERVICE_ADD_SCHEDULE = "add_schedule"
 SERVICE_UPDATE_SCHEDULE = "update_schedule"
 SERVICE_REMOVE_SCHEDULE = "remove_schedule"
 SERVICE_TOGGLE_SCHEDULE = "toggle_schedule"
+SERVICE_RENAME_PUMP = "rename_pump"
 
 ATTR_SCHEDULE_ID = "schedule_id"
 ATTR_TIME = "time"
@@ -109,6 +110,16 @@ SERVICE_TOGGLE_SCHEDULE_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_DEVICE_ID): str,
         vol.Required(ATTR_SCHEDULE_ID): str,
+    }
+)
+
+SERVICE_RENAME_PUMP_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DEVICE_ID): str,
+        vol.Required(ATTR_PUMP): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=PUMP_COUNT)
+        ),
+        vol.Required(ATTR_NAME): str,
     }
 )
 
@@ -198,6 +209,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_UPDATE_SCHEDULE,
                 SERVICE_REMOVE_SCHEDULE,
                 SERVICE_TOGGLE_SCHEDULE,
+                SERVICE_RENAME_PUMP,
             ):
                 hass.services.async_remove(DOMAIN, svc)
             hass.data.pop(DOMAIN, None)
@@ -332,6 +344,30 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             schema=SERVICE_TOGGLE_SCHEDULE_SCHEMA,
         )
 
+    # --- Rename pump ---
+    if not hass.services.has_service(DOMAIN, SERVICE_RENAME_PUMP):
+
+        async def handle_rename_pump(call: ServiceCall) -> None:
+            target_device_id = call.data[ATTR_DEVICE_ID]
+            mgr = _get_schedule_manager(hass, target_device_id)
+            if mgr is None:
+                _LOGGER.error("No schedule manager for device %s", target_device_id)
+                return
+
+            try:
+                await mgr.async_rename_pump(
+                    pump=call.data[ATTR_PUMP],
+                    name=call.data[ATTR_NAME],
+                )
+            except ValueError as exc:
+                _LOGGER.error("Failed to rename pump: %s", exc)
+                raise
+
+        hass.services.async_register(
+            DOMAIN, SERVICE_RENAME_PUMP, handle_rename_pump,
+            schema=SERVICE_RENAME_PUMP_SCHEMA,
+        )
+
 
 # ── WebSocket commands ────────────────────────────────────────────────
 
@@ -368,6 +404,43 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
         connection.send_result(msg["id"], {"schedules": mgr.get_all()})
 
     websocket_api.async_register_command(hass, ws_get_schedules)
+
+    @websocket_api.websocket_command(
+        {vol.Required("type"): f"{DOMAIN}/get_devices"}
+    )
+    @websocket_api.async_response
+    async def ws_get_devices(
+        hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+    ) -> None:
+        """Return all configured devices with pump names."""
+        devices = []
+        for _eid, obj in hass.data.get(DOMAIN, {}).items():
+            if not isinstance(obj, AutoAquaDoserCoordinator):
+                continue
+            coord: AutoAquaDoserCoordinator = obj
+            mgr = _get_schedule_manager(hass, coord.device_id)
+
+            # Build pump names: custom name > API name > default
+            pump_names = {}
+            custom_names = mgr.get_pump_names() if mgr else {}
+            for p in range(1, PUMP_COUNT + 1):
+                if custom_names.get(p):
+                    pump_names[str(p)] = custom_names[p]
+                elif coord.data and coord.data.pump_names.get(p):
+                    pump_names[str(p)] = coord.data.pump_names[p]
+                else:
+                    pump_names[str(p)] = f"Pump {p}"
+
+            devices.append({
+                "device_id": coord.device_id,
+                "device_name": coord.data.device_name if coord.data else coord.device_id,
+                "online": coord.data.online if coord.data else False,
+                "pump_names": pump_names,
+            })
+
+        connection.send_result(msg["id"], {"devices": devices})
+
+    websocket_api.async_register_command(hass, ws_get_devices)
 
 
 # ── Static file serving for Lovelace card ─────────────────────────────

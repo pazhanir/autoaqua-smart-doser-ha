@@ -119,18 +119,31 @@ class ScheduleManager:
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._schedules: dict[str, ScheduleEntry] = {}
         self._listeners: dict[str, CALLBACK_TYPE] = {}
+        self._pump_names: dict[int, str] = {}  # {1: "Alkalinity", 2: "Calcium", ...}
 
     async def async_load(self) -> None:
-        """Load schedules from persistent storage and register listeners."""
+        """Load schedules and pump names from persistent storage and register listeners."""
         data = await self._store.async_load()
         if data and isinstance(data, dict):
-            device_schedules = data.get(self.device_id, [])
-            for entry_data in device_schedules:
-                try:
-                    entry = ScheduleEntry.from_dict(entry_data)
-                    self._schedules[entry.id] = entry
-                except (KeyError, ValueError) as exc:
-                    _LOGGER.warning("Skipping invalid schedule entry: %s", exc)
+            device_data = data.get(self.device_id)
+            if isinstance(device_data, dict):
+                # New format: {schedules: [...], pump_names: {...}}
+                for entry_data in device_data.get("schedules", []):
+                    try:
+                        entry = ScheduleEntry.from_dict(entry_data)
+                        self._schedules[entry.id] = entry
+                    except (KeyError, ValueError) as exc:
+                        _LOGGER.warning("Skipping invalid schedule entry: %s", exc)
+                raw_names = device_data.get("pump_names", {})
+                self._pump_names = {int(k): v for k, v in raw_names.items()}
+            elif isinstance(device_data, list):
+                # Legacy format (v1): just a list of schedules
+                for entry_data in device_data:
+                    try:
+                        entry = ScheduleEntry.from_dict(entry_data)
+                        self._schedules[entry.id] = entry
+                    except (KeyError, ValueError) as exc:
+                        _LOGGER.warning("Skipping invalid schedule entry: %s", exc)
 
         # Register time listeners for all enabled schedules
         self._register_all_listeners()
@@ -141,11 +154,31 @@ class ScheduleManager:
         )
 
     async def _async_save(self) -> None:
-        """Save all schedules to persistent storage."""
-        # Load existing data to preserve other devices' schedules
+        """Save all schedules and pump names to persistent storage."""
+        # Load existing data to preserve other devices' data
         data = await self._store.async_load() or {}
-        data[self.device_id] = [s.to_dict() for s in self._schedules.values()]
+        data[self.device_id] = {
+            "schedules": [s.to_dict() for s in self._schedules.values()],
+            "pump_names": {str(k): v for k, v in self._pump_names.items()},
+        }
         await self._store.async_save(data)
+
+    # ── Pump names ────────────────────────────────────────────────────
+
+    def get_pump_names(self) -> dict[int, str]:
+        """Return custom pump names. Missing pumps have no entry."""
+        return dict(self._pump_names)
+
+    async def async_rename_pump(self, pump: int, name: str) -> None:
+        """Set a custom name for a pump. Empty string clears the name."""
+        if pump < 1 or pump > PUMP_COUNT:
+            raise ValueError(f"Pump must be 1-{PUMP_COUNT}, got {pump}")
+        if name:
+            self._pump_names[pump] = name
+        else:
+            self._pump_names.pop(pump, None)
+        await self._async_save()
+        _LOGGER.info("Renamed pump %d to '%s' on device %s", pump, name, self.device_id)
 
     def get_all(self) -> list[dict[str, Any]]:
         """Return all schedules as a list of dicts."""
