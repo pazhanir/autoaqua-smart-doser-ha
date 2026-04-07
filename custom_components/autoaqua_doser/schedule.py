@@ -435,7 +435,12 @@ class ScheduleManager:
                 entry.ml,
             )
             try:
-                await coordinator.async_dose(entry.pump, entry.ml)
+                await coordinator.async_dose(
+                    entry.pump,
+                    entry.ml,
+                    trigger="schedule",
+                    schedule_name=entry.name or "",
+                )
             except Exception:
                 _LOGGER.exception(
                     "Schedule %s failed to dose pump %d", schedule_id, entry.pump

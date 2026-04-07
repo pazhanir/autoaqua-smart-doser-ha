@@ -8,6 +8,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import AutoAquaApi, AutoAquaApiError
@@ -15,6 +16,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PUMP_COUNT,
+    SIGNAL_DOSE_EXECUTED,
     STATUS_POLL_CMD,
     build_dose_command,
 )
@@ -141,24 +143,68 @@ class AutoAquaDoserCoordinator(DataUpdateCoordinator[DoserDeviceData]):
         except AutoAquaApiError as err:
             raise UpdateFailed(f"Error fetching doser data: {err}") from err
 
-    async def async_dose(self, pump: int, ml: int) -> bool:
+    async def async_dose(
+        self,
+        pump: int,
+        ml: int,
+        *,
+        trigger: str = "manual",
+        schedule_name: str = "",
+    ) -> bool:
         """Send a dose command for the given pump and amount.
 
         Args:
             pump: Pump number (1-4).
             ml: Milliliters to dose (1-999).
+            trigger: What triggered the dose ("manual", "schedule", "service").
+            schedule_name: Name of the schedule (if triggered by schedule).
 
         Returns True if the command was acknowledged.
         """
         command = build_dose_command(pump, ml)
         _LOGGER.info(
-            "Dosing pump %d with %d ml on device %s (cmd: %s)",
+            "Dosing pump %d with %d ml on device %s (trigger: %s, cmd: %s)",
             pump,
             ml,
             self.device_id,
+            trigger,
             command,
         )
-        result = await self.api.send_command(self.device_id, command)
+
+        signal = SIGNAL_DOSE_EXECUTED.format(device_id=self.device_id, pump=pump)
+
+        try:
+            result = await self.api.send_command(self.device_id, command)
+        except Exception as err:
+            _LOGGER.error(
+                "Dose failed for pump %d on device %s: %s", pump, self.device_id, err
+            )
+            async_dispatcher_send(
+                self.hass,
+                signal,
+                {
+                    "event_type": "dose_failed",
+                    "pump": pump,
+                    "ml": ml,
+                    "trigger": trigger,
+                    "schedule_name": schedule_name,
+                    "error": str(err),
+                },
+            )
+            raise
+
+        # Signal success to event entities
+        async_dispatcher_send(
+            self.hass,
+            signal,
+            {
+                "event_type": "dose_executed",
+                "pump": pump,
+                "ml": ml,
+                "trigger": trigger,
+                "schedule_name": schedule_name,
+            },
+        )
 
         # Request a refresh so sensors update after dosing
         await self.async_request_refresh()

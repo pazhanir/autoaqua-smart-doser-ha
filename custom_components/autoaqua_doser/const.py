@@ -45,6 +45,9 @@ DOSE_MAX_ML = 999
 # Status poll command
 STATUS_POLL_CMD = "3C03000220003E"
 
+# Dispatcher signal for dose events (format with device_id and pump number)
+SIGNAL_DOSE_EXECUTED = f"{DOMAIN}_dose_executed_{{device_id}}_{{pump}}"
+
 
 def build_dose_command(pump: int, ml: int) -> str:
     """Build a hex dose command string for the given pump and ml amount.

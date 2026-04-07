@@ -27,7 +27,7 @@ from .schedule import ScheduleManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.BUTTON]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.BUTTON, Platform.EVENT]
 
 # ── Dose service ──────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ SCHEDULE_MANAGERS_KEY = f"{DOMAIN}_schedule_managers"
 # Static path for serving the Lovelace card JS
 CARD_URL_PATH = f"/hacsfiles/{DOMAIN}"
 CARD_JS_FILENAME = "autoaqua-doser-schedule-card.js"
-CARD_VERSION = "1.1.1"
+CARD_VERSION = "1.2.0"
 LOVELACE_RESOURCE_URL = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}?v={CARD_VERSION}"
 
 # Keys for per-hass-instance registration flags
