@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 import voluptuous as vol
 
-from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -127,10 +127,13 @@ SERVICE_RENAME_PUMP_SCHEMA = vol.Schema(
 SCHEDULE_MANAGERS_KEY = f"{DOMAIN}_schedule_managers"
 
 # Static path for serving the Lovelace card JS
-CARD_URL_PATH = f"/hacsfiles/{DOMAIN}"
 CARD_JS_FILENAME = "autoaqua-doser-schedule-card.js"
-CARD_VERSION = "1.2.0"
+CARD_VERSION = "1.2.1"
+CARD_URL_PATH = "/local"
 LOVELACE_RESOURCE_URL = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}?v={CARD_VERSION}"
+
+# Old URL pattern from previous versions (for cleanup)
+_OLD_CARD_URL_PREFIX = f"/hacsfiles/{DOMAIN}/{CARD_JS_FILENAME}"
 
 # Keys for per-hass-instance registration flags
 _CARD_REGISTERED_KEY = f"{DOMAIN}_card_registered"
@@ -456,30 +459,39 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
 
 
 async def _async_register_card_resource(hass: HomeAssistant) -> None:
-    """Register the card JS file as a static path and add it as a Lovelace resource."""
+    """Copy the card JS to config/www/ and register as a Lovelace resource.
+
+    Uses HA's built-in /local/ static serving (config/www/) which is reliable
+    across all HA versions, instead of async_register_static_paths which can
+    break on HA updates.
+    """
     if hass.data.get(_CARD_REGISTERED_KEY):
         return
     hass.data[_CARD_REGISTERED_KEY] = True
 
-    # Serve the www/ folder under the URL path
-    www_dir = str(Path(__file__).parent / "www")
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_URL_PATH, www_dir, cache_headers=False)]
-    )
-    _LOGGER.info("Registered static path %s -> %s", CARD_URL_PATH, www_dir)
+    # Copy JS file to config/www/
+    src = Path(__file__).parent / "www" / CARD_JS_FILENAME
+    www_dir = Path(hass.config.path("www"))
+    dst = www_dir / CARD_JS_FILENAME
 
-    # Auto-register as a Lovelace resource so users don't have to manually add it
-    # We use the lovelace resources collection if available
+    try:
+        www_dir.mkdir(exist_ok=True)
+        shutil.copy2(str(src), str(dst))
+        _LOGGER.info("Copied card JS to %s", dst)
+    except Exception:
+        _LOGGER.exception("Failed to copy card JS to %s", dst)
+        return
+
+    # Auto-register as a Lovelace resource
     await _async_add_lovelace_resource(hass)
 
 
 async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
     """Add the card JS as a Lovelace resource if not already present.
 
-    If an older version URL exists, update it to the current version.
+    If an older version URL exists (including old /hacsfiles/ URLs), update it.
     """
     try:
-        # Try to access the Lovelace resources collection (storage mode)
         from homeassistant.components.lovelace import (
             DOMAIN as LOVELACE_DOMAIN,
         )
@@ -492,25 +504,23 @@ async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
             _LOGGER.debug("Lovelace not loaded yet; skipping auto-register of card resource")
             return
 
-        # In storage mode, lovelace_data has a resources attribute
         resources = getattr(lovelace_data, "resources", None)
         if resources is None or not isinstance(resources, ResourceStorageCollection):
             _LOGGER.debug("Lovelace not in storage mode; add card resource manually")
             return
 
-        # Ensure resources are loaded
         if not resources.loaded:
             await resources.async_load()
 
-        # Check if already registered (exact match or older version)
+        # Check for existing resource (current URL, old version, or old /hacsfiles/ URL)
         base_url = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}"
         for item in resources.async_items():
             url = item.get("url", "")
             if url == LOVELACE_RESOURCE_URL:
                 _LOGGER.debug("Card resource already registered with current version")
                 return
-            if url.startswith(base_url):
-                # Older version found — update to current
+            # Match old /local/ version or old /hacsfiles/ version
+            if url.startswith(base_url) or url.startswith(_OLD_CARD_URL_PREFIX):
                 await resources.async_update_item(
                     item["id"], {"res_type": "module", "url": LOVELACE_RESOURCE_URL}
                 )
@@ -519,7 +529,7 @@ async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
                 )
                 return
 
-        # Register it
+        # Register new
         await resources.async_create_item(
             {"res_type": "module", "url": LOVELACE_RESOURCE_URL}
         )
@@ -540,7 +550,7 @@ async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
 
 
 async def _async_remove_lovelace_resource(hass: HomeAssistant) -> None:
-    """Remove the card JS Lovelace resource entry on unload."""
+    """Remove the card JS Lovelace resource entry and copied file on unload."""
     try:
         from homeassistant.components.lovelace import (
             DOMAIN as LOVELACE_DOMAIN,
@@ -562,13 +572,23 @@ async def _async_remove_lovelace_resource(hass: HomeAssistant) -> None:
 
         base_url = f"{CARD_URL_PATH}/{CARD_JS_FILENAME}"
         for item in resources.async_items():
-            if item.get("url", "").startswith(base_url):
+            url = item.get("url", "")
+            if url.startswith(base_url) or url.startswith(_OLD_CARD_URL_PREFIX):
                 await resources.async_delete_item(item["id"])
-                _LOGGER.info("Removed Lovelace resource: %s", item["url"])
-                return
+                _LOGGER.info("Removed Lovelace resource: %s", url)
+                break
 
     except Exception:
         _LOGGER.debug("Could not remove Lovelace resource on unload", exc_info=True)
+
+    # Remove copied JS file
+    try:
+        dst = Path(hass.config.path("www")) / CARD_JS_FILENAME
+        if dst.exists():
+            dst.unlink()
+            _LOGGER.info("Removed copied card JS: %s", dst)
+    except Exception:
+        _LOGGER.debug("Could not remove copied card JS", exc_info=True)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
