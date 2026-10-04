@@ -27,7 +27,13 @@ from .schedule import ScheduleManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.BUTTON, Platform.EVENT]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.NUMBER,
+    Platform.BUTTON,
+    Platform.EVENT,
+]
 
 # ── Dose service ──────────────────────────────────────────────────────
 

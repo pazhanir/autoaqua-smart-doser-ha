@@ -20,6 +20,7 @@ from .const import (
     STATUS_POLL_CMD,
     build_dose_command,
 )
+from .status import parse_status_hex
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -116,6 +117,9 @@ class AutoAquaDoserCoordinator(DataUpdateCoordinator[DoserDeviceData]):
         )
         self.api = api
         self.device_id = device_id
+        # Last liquid sensor state seen while the doser was active (pump -> missing).
+        # None until the first active frame: idle frames carry no liquid info.
+        self.liquid_missing: dict[int, bool] | None = None
 
     async def _async_update_data(self) -> DoserDeviceData:
         """Fetch device data from the cloud API.
@@ -138,7 +142,14 @@ class AutoAquaDoserCoordinator(DataUpdateCoordinator[DoserDeviceData]):
                     f"Device {self.device_id} not found in API response"
                 )
 
-            return _parse_device(device_raw)
+            data = _parse_device(device_raw)
+            frame = parse_status_hex(data.status_hex)
+            if frame is not None and frame.active:
+                self.liquid_missing = {
+                    pump: frame.liquid_missing(pump)
+                    for pump in range(1, PUMP_COUNT + 1)
+                }
+            return data
 
         except AutoAquaApiError as err:
             raise UpdateFailed(f"Error fetching doser data: {err}") from err

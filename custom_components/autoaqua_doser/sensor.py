@@ -8,6 +8,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -32,7 +33,21 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         name="Tank",
         icon="mdi:fishbowl-outline",
     ),
+    # Raw status frame + cloud device data, for decoding more fields.
+    SensorEntityDescription(
+        key="status_hex",
+        name="Status Raw",
+        icon="mdi:code-braces",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+    ),
 )
+
+# Left out of the raw attributes: account identifiers and secrets, the status
+# frame (already the state), and *date* fields, which change on every poll and
+# would write a recorder row each minute.
+_EXCLUDED_KEYS = ("device_uaccount", "device_uid", "tank_id", "device_status_hex")
+_EXCLUDED_PARTS = ("token", "password", "secret", "session", "date")
 
 
 async def async_setup_entry(
@@ -90,4 +105,19 @@ class AutoAquaDoserSensor(
             return data.firmware_version
         if key == "tank_name":
             return data.tank_name or "Unknown"
+        if key == "status_hex":
+            return data.status_hex[:255] or None
         return None
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Expose the raw cloud device data on the diagnostic sensor only."""
+        if self.entity_description.key != "status_hex":
+            return None
+        raw = self.coordinator.data.raw or {}
+        return {
+            k: v
+            for k, v in raw.items()
+            if k not in _EXCLUDED_KEYS
+            and not any(part in k.lower() for part in _EXCLUDED_PARTS)
+        }

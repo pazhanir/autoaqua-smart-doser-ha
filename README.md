@@ -44,6 +44,25 @@ A custom [Home Assistant](https://www.home-assistant.io/) integration for the **
 | Tank | Sensor | Associated tank name |
 | Pump 1-4 Dose Amount | Number | Set dose amount (1-999 ml) |
 | Pump 1-4 Dose | Button | Press to trigger dose at the set amount |
+| Pump 1-4 Liquid Missing | Binary sensor (problem) | On when the pump's optical sensor sees no liquid (empty bottle or lost prime) |
+| Status Raw | Sensor (diagnostic, disabled by default) | Raw status frame, with the cloud device data as attributes (account identifiers removed) |
+
+### Liquid sensor
+
+The doser has an optical sensor at each pump. Its state is read from the status frame
+(`device_status_hex`) that the device pushes after each status poll:
+
+- Byte 1, low nibble: pumps currently running (bit n-1 = pump n).
+- Byte 1, high nibble: no liquid detected (bit n-1 = pump n).
+- Last byte: phase (`00` dose started, `04` manual run, `05` finished, `01` idle).
+
+The device only reports the liquid bits while it is dosing or running manually; idle frames
+always carry `0`. The binary sensors therefore keep the last value seen during activity, and
+restore their previous state after a restart. An empty bottle is detected at the next dose of
+that doser, and a re-primed pump clears at its next run.
+
+Layout observed on firmware 25.2.14 with a Smart Doser 4 and a Smart Doser 2, checked against
+the AquaLine app's "Sensor" view.
 
 ## Service: `autoaqua_doser.dose`
 
